@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 Tianyuan Yu, Zhiyi Zhang
+ * Copyright (C) 2018-2019 Tianyuan Yu, Zhiyi Zhang
  *
  * This file is subject to the terms and conditions of the GNU Lesser
  * General Public License v3.0. See the file LICENSE in the top level
@@ -11,7 +11,52 @@
 #include "service-discovery.h"
 
 static ndn_sd_context_t sd_context;
+static uint8_t encode_buffer[250];
+static uint32_t sd_lifetime;
+static ndn_interest_t sd_interest, sd_interest_query;
+static ndn_data_t sd_data;
 
+/************************************************************/
+/*  Definition of Forwarder Callback Wrapper                */
+/************************************************************/
+static int
+_on_advertisement(const uint8_t* interest, uint32_t interest_size, void* usrdata)
+{
+  (void)usrdata;
+  ndn_interest_from_block(&sd_interest, interest, interest_size);
+  ndn_sd_on_advertisement_process(&sd_interest);
+  return NDN_FWD_STRATEGY_SUPPRESS;
+}
+
+static int
+_on_query(const uint8_t* interest, uint32_t interest_size, void* usrdata)
+{
+  (void)usrdata;
+  ndn_interest_from_block(&sd_interest, interest, interest_size);
+  ndn_sd_on_query_process(&sd_interest, &sd_data);
+  return NDN_FWD_STRATEGY_SUPPRESS;
+}
+
+static void
+_on_query_response(const uint8_t* data, uint32_t data_size, void* usrdata)
+{
+  (void)usrdata;
+  // TODO: Verify signature before processing
+  ndn_data_tlv_decode_no_verify(&sd_data, data, data_size);
+  ndn_sd_on_query_process(&sd_data);
+}
+
+static void
+_on_advertisement_timeout(void* usrdata)
+{
+  ndn_sd_advertisement((uint32_t)(*usrdata));
+}
+
+static void
+_on_query_timeout(void* usrdata)
+{
+  ndn_sd_on_query_timeout_process((ndn_interest_t*)usrdata);
+}
 /************************************************************/
 /*  Definition of Neighbors APIS                            */
 /************************************************************/
@@ -126,15 +171,46 @@ _neighbors_remove_neighbor(const name_component_t* id)
  /************************************************************/
 
 void
-ndn_sd_init(const ndn_name_t* home_prefix, const name_component_t* self_id)
+ndn_sd_init(const ndn_name_t* home_prefix, const name_component_t* self_id,
+            ndn_ecc_pub_t* pub_key, ndn_ecc_prv_t* prv_key)
 {
   _neighbors_init();
   sd_context.self.identity = *self_id;
   sd_context.home_prefix = *home_prefix;
+  sd_context.pub_key = *pub_key;
+  sd_context.prv_key = *prv_key;
 
   for (uint8_t i = 0; i < NDN_APPSUPPORT_SERVICES_SIZE; i++) {
     sd_context.self.services[i].status = NDN_APPSUPPORT_SERVICE_UNDEFINED;
   }
+
+  // Register Advertisement Prefix
+  ndn_interest_from_name(&sd_interest, &sd_context.home_prefix);
+  name_component_t comp_sd;
+  const char* str_sd = "SD-ADV";
+  name_component_from_string(&comp_sd, str_sd, strlen(str_sd));
+  ndn_name_append_component(&sd_interest->name, &comp_sd);
+
+  ndn_encoder_t encoder;
+  encoder_init(&encoder, encode_buffer, sizeof(encode_buffer));
+  ndn_name_tlv_encode(&encoder, &sd_interest.name);
+  ndn_forwarder_register_prefix(encode_buffer, encoder.offset,
+                                _on_advertisement, NULL);
+
+  // Register Query Prefix
+  ndn_interest_from_name(&sd_interest, &sd_context.home_prefix);
+  const char* str_sd_query1 = "SD";
+  name_component_from_string(&comp_sd, str_sd_query1, strlen(str_sd_query1));
+  ndn_name_append_component(&sd_interest->name, &comp_sd);
+  ndn_name_append_component(&sd_interest->name, &sd_context.self.identity);
+  const char* str_sd_query2 = "QUERY";
+  name_component_from_string(&comp_sd, str_sd_query2, strlen(str_sd_query2));
+  ndn_name_append_component(&sd_interest->name, &comp_sd);
+
+  encoder_init(&encoder, encode_buffer, sizeof(encode_buffer));
+  ndn_name_tlv_encode(&encoder, &sd_interest.name);
+  ndn_forwarder_register_prefix(encode_buffer, encoder.offset,
+                                _on_query, NULL);
 }
 
 ndn_service_t*
@@ -172,19 +248,19 @@ ndn_sd_find_first_service_provider(const char* id_value, uint32_t id_size)
 }
 
 void
-ndn_sd_prepare_advertisement(ndn_interest_t* interest)
+ndn_sd_advertisement(uint32_t lifetime)
 {
   // make service list and prepare the interest
-  ndn_interest_from_name(interest, &sd_context.home_prefix);
+  ndn_interest_from_name(&sd_interest, &sd_context.home_prefix);
 
   name_component_t comp_sd;
   const char* str_sd = "SD-ADV";
   name_component_from_string(&comp_sd, str_sd, strlen(str_sd));
-  ndn_name_append_component(&interest->name, &comp_sd);
-  ndn_name_append_component(&interest->name, &sd_context.self.identity);
+  ndn_name_append_component(&sd_interest.name, &comp_sd);
+  ndn_name_append_component(&sd_interest.name, &sd_context.self.identity);
 
   ndn_encoder_t encoder;
-  encoder_init(&encoder, interest->parameters.value, NDN_INTEREST_PARAMS_BUFFER_SIZE);
+  encoder_init(&encoder, &sd_interest.parameters.value, NDN_INTEREST_PARAMS_BUFFER_SIZE);
   for (uint8_t i = 0; i < NDN_APPSUPPORT_SERVICES_SIZE; i++) {
     if (sd_context.self.services[i].status != NDN_APPSUPPORT_SERVICE_UNDEFINED
         && sd_context.self.services[i].status != NDN_APPSUPPORT_SERVICE_UNAVAILABLE) {
@@ -195,33 +271,55 @@ ndn_sd_prepare_advertisement(ndn_interest_t* interest)
       name_component_tlv_encode(&encoder, &toEncode);
     }
   }
-  interest->enable_Parameters = 1;
-  interest->parameters.size = encoder.offset;
+  sd_interest.enable_Parameters = 1;
+  sd_interest.parameters.size = encoder.offset;
+  sd_interest.lifetime = lifetime;
+  sd_lifetime = lifetime;
+
+  encoder_init(&encoder, encode_buffer, sizeof(encode_buffer));
+  ndn_interest_tlv_encode(&encoder, &sd_interest);
+  ndn_forwarder_express_interest(encode_buffer, encoder.offset,
+                                 NULL, _on_advertisement(),
+                                 &sd_lifetime);
 }
 
 void
-ndn_sd_prepare_query(ndn_interest_t* interest, name_component_t* target, ndn_service_t* service,
-                     const uint8_t* params_value, uint32_t params_size)
+ndn_sd_query(name_component_t* target, ndn_service_t* service,
+             const uint8_t* params_value, uint32_t params_size,
+             uint32_t lifetime)
 {
-  ndn_interest_from_name(interest, &sd_context.home_prefix);
+  ndn_interest_from_name(&sd_interest_query, &sd_context.home_prefix);
   name_component_t comp_sd;
   const char* str_sd = "SD";
   name_component_from_string(&comp_sd, str_sd, strlen(str_sd));
-  ndn_name_append_component(&interest->name, &comp_sd);
-  ndn_name_append_component(&interest->name, target);
+  ndn_name_append_component(&sd_interest_query.name, &comp_sd);
+  ndn_name_append_component(&sd_interest_query.name, target);
 
   name_component_t comp_qr;
   const char* str_qr = "QUERY";
   name_component_from_string(&comp_qr, str_qr, strlen(str_qr));
-  ndn_name_append_component(&interest->name, &comp_qr);
+  ndn_name_append_component(&sd_interest_query.name, &comp_qr);
 
   name_component_t comp_id;
   name_component_from_buffer(&comp_id, TLV_GenericNameComponent, service->id_value, service->id_size);
-  ndn_name_append_component(&interest->name, &comp_id);
+  ndn_name_append_component(&sd_interest_query.name, &comp_id);
 
   if (params_value != NULL && params_size > 0) {
-    ndn_interest_set_Parameters(interest, params_value, params_size);
+    ndn_interest_set_Parameters(&sd_interest_query, params_value, params_size);
   }
+
+  // Signing and Expressing
+  ndn_interest_from_name(&sd_interest, &sd_context.home_prefix);
+  ndn_name_append_component(&sd_interest.name, &sd_context.self.identity);
+  sd_interest_query.lifetime = lifetime;
+  ndn_signed_interest_ecdsa_sign(&sd_interest_query, &sd_interest.name,
+                                 &sd_context.prv_key);
+  ndn_encoder_t encoder;
+  encoder_init(&encoder, encode_buffer, sizeof(encode_buffer));
+  ndn_interest_tlv_encode(&encoder, &sd_interest_query);
+  ndn_forwarder_express_interest(encode_buffer, encoder.offset,
+                                 _on_query_response, _on_query_timeout,
+                                 &sd_interest_query);
 }
 
 int
@@ -277,6 +375,13 @@ ndn_sd_on_query_process(const ndn_interest_t* interest, ndn_data_t* response)
 
     response->name = interest->name;
     ndn_data_set_content(response, buffer, sizeof(buffer));
+
+    encoder_init(&encoder, encode_buffer, sizeof(encode_buffer));
+    ndn_interest_from_name(&sd_interest, &sd_context.home_prefix);
+    ndn_name_append_component(&sd_interest.name, &sd_context.self.identity);
+    ndn_data_tlv_encode_ecdsa_sign(&encoder, response, &sd_interest.name,
+                                   &sd_context.self.identity);
+    ndn_forwarder_put_data(encode_buffer, encoded.offset);
     return 0;
   }
   return NDN_SD_NO_MATCH_SERVCE;
