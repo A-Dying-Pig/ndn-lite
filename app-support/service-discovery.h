@@ -23,15 +23,15 @@ extern "C" {
 typedef struct ndn_service {
   /**
    * The NDN service status.
-   */  
+   */
   uint8_t status;
   /**
    * The NDN service ID.
-   */    
+   */
   uint8_t id_value[NDN_APPSUPPORT_SERVICE_ID_SIZE];
   /**
    * Size of service ID.
-   */    
+   */
   uint32_t id_size;
 } ndn_service_t;
 
@@ -41,12 +41,15 @@ typedef struct ndn_service {
 typedef struct ndn_sd_identity {
   /**
    * The neighbor identity.
-   */ 
+   */
   name_component_t identity;
   /**
    * The neighbor identity's service list.
-   */ 
+   */
   ndn_service_t services[NDN_APPSUPPORT_SERVICES_SIZE];
+
+  ndn_ecc_pub_t pub_key;
+  ndn_ecc_prv_t prv_key;
 } ndn_sd_identity_t;
 
 /**
@@ -55,15 +58,15 @@ typedef struct ndn_sd_identity {
 typedef struct ndn_sd_context {
   /**
    * The home prefix of local network.
-   */ 
+   */
   ndn_name_t home_prefix;
   /**
    * The local state manager identity (and services provided).
-   */ 
+   */
   ndn_sd_identity_t self;
   /**
    * The neighbor list.
-   */ 
+   */
   ndn_sd_identity_t neighbors[NDN_APPSUPPORT_NEIGHBORS_SIZE];
 } ndn_sd_context_t;
 
@@ -73,7 +76,8 @@ typedef struct ndn_sd_context {
  * @param self_id. Input. The local state manager identity.
  */
 void
-ndn_sd_init(const ndn_name_t* home_prefix, const name_component_t* self_id);
+ndn_sd_init(const ndn_name_t* home_prefix, const name_component_t* self_id,
+            ndn_ecc_pub_t* pub_key, ndn_ecc_prv_t* prv_key);
 
 /**
  * Get a pointer to a NDN service by searching its NDN service ID.
@@ -119,11 +123,11 @@ ndn_sd_find_first_service_provider(const char* id_value, uint32_t id_size);
  * @param interest. Output. The prepared advertisement interest.
  */
 void
-ndn_sd_prepare_advertisement(ndn_interest_t* interest);
+ndn_sd_advertisement(uint32_t lifetime);
 
 /**
- * Prepare a Service Discovery Query. Users should manually sign the output query 
- * interest to obtain a valid signed query interest. 
+ * Prepare a Service Discovery Query. Users should manually sign the output query
+ * interest to obtain a valid signed query interest.
  * @param interest. Output. The prepared unsigned query interest.
  * @param target. Input. The query target identity.
  * @param service. Input. The query target service.
@@ -131,11 +135,12 @@ ndn_sd_prepare_advertisement(ndn_interest_t* interest);
  * @param params_size. Input. Size of input buffer (optional)
  */
 void
-ndn_sd_prepare_query(ndn_interest_t* interest, name_component_t* target, ndn_service_t* service,
-                     const uint8_t* params_value, uint32_t params_size);
+ndn_sd_query(name_component_t* target, ndn_service_t* service,
+             const uint8_t* params_value, uint32_t params_size,
+             uint32_t lifetime);
 
 /**
- * Process Service Discovery Advertisement. This function will automatically set and 
+ * Process Service Discovery Advertisement. This function will automatically set and
  * update local Service Discovery State and is used in receiver side onInterest callback.
  * @param interest. Input. Decoded advertisement interest.
  * @return 0 if there is no error.
@@ -153,7 +158,7 @@ int
 ndn_sd_on_query_process(const ndn_interest_t* interest, ndn_data_t* response);
 
 /**
- * Process Service Discovery Query's Response. This function will automatically set and 
+ * Process Service Discovery Query's Response. This function will automatically set and
  * update local Service Discovery State and is used in sender side onData callback.
  * @param response. Input. Decoded and signature verified query response.
  * @return 0 if there is no error.
