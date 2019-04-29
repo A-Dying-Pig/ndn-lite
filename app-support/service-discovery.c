@@ -10,6 +10,10 @@
 
 #include "service-discovery.h"
 
+#ifndef FORWARDER_FORWARDER_H
+#include "../forwarder/forwarder.h"
+#endif
+
 static ndn_sd_context_t sd_context;
 static uint8_t encode_buffer[250];
 static uint32_t sd_lifetime;
