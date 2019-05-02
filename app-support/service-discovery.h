@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Tianyuan Yu, Zhiyi Zhang
+ * Copyright (C) 2018 Tianyuan Yu, Zhiyi Zhang
  *
  * This file is subject to the terms and conditions of the GNU Lesser
  * General Public License v3.0. See the file LICENSE in the top level
@@ -47,9 +47,6 @@ typedef struct ndn_sd_identity {
    * The neighbor identity's service list.
    */
   ndn_service_t services[NDN_APPSUPPORT_SERVICES_SIZE];
-
-  ndn_ecc_pub_t pub_key;
-  ndn_ecc_prv_t prv_key;
 } ndn_sd_identity_t;
 
 /**
@@ -76,8 +73,7 @@ typedef struct ndn_sd_context {
  * @param self_id. Input. The local state manager identity.
  */
 void
-ndn_sd_init(const ndn_name_t* home_prefix, const name_component_t* self_id,
-            ndn_ecc_pub_t* pub_key, ndn_ecc_prv_t* prv_key);
+ndn_sd_init(const ndn_name_t* home_prefix, const name_component_t* self_id);
 
 /**
  * Get a pointer to a NDN service by searching its NDN service ID.
@@ -121,9 +117,10 @@ ndn_sd_find_first_service_provider(const char* id_value, uint32_t id_size);
 /**
  * Prepare a Service Discovery Advertisement. This function should be called after setting local services status.
  * @param interest. Output. The prepared advertisement interest.
+ * @TODO: support lifetime input
  */
 void
-ndn_sd_advertisement(uint32_t lifetime);
+ndn_sd_prepare_advertisement(ndn_interest_t* interest);
 
 /**
  * Prepare a Service Discovery Query. Users should manually sign the output query
@@ -135,9 +132,8 @@ ndn_sd_advertisement(uint32_t lifetime);
  * @param params_size. Input. Size of input buffer (optional)
  */
 void
-ndn_sd_query(name_component_t* target, ndn_service_t* service,
-             const uint8_t* params_value, uint32_t params_size,
-             uint32_t lifetime);
+ndn_sd_prepare_query(ndn_interest_t* interest, name_component_t* target, ndn_service_t* service,
+                     const uint8_t* params_value, uint32_t params_size);
 
 /**
  * Process Service Discovery Advertisement. This function will automatically set and
